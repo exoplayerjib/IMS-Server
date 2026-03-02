@@ -1,0 +1,48 @@
+{
+    "name": "Exo's Dev Container",
+
+    "build": {
+        "dockerfile": "Dockerfile",
+        "context": ".."
+    },
+    "workspaceMount": "source=${localWorkspaceFolder},target=/development,type=bind,consistency=cached",
+    "workspaceFolder": "/development",
+    "remoteUser": "exodev",
+    "customizations": {
+        "vscode": {
+            "settings": {
+                "terminal.integrated.defaultProfile.linux": "fish",
+                "terminal.integrated.profiles.linux": {
+                    "bash": {
+                        "path": "bash",
+                        "icon": "terminal-bash"
+                    },
+                    "zsh": {
+                        "path": "zsh"
+                    },
+                    "fish": {
+                        "path": "/usr/bin/fish",
+                        "icon": "terminal-bash"
+                    },
+                    "tmux": {
+                        "path": "tmux",
+                        "icon": "terminal-tmux"
+                    }
+                }
+            },
+            "extensions": [
+                "icrawl.discord-vscode",
+                "ms-vscode.cpptools",
+				"ms-vscode.cpptools-extension-pack",
+				"vscjava.vscode-java-pack",
+				"ms-python.python",
+				"bmalehorn.vscode-fish",
+				"mtxr.sqltools",
+                "ms-python.debugpy",
+                "ms-azuretools.vscode-docker",
+                "ms-vscode.cmake-tools"
+            ]
+        }
+    }
+
+}
