@@ -68,8 +68,9 @@ class Reactor {
 
 
         /*
-        * Shutdown the reactor and clean up resources.
-         * This will stop the event loop and close all file descriptors.
+        * Request the reactor to shut down.
+         * This will stop the event loop by signaling the main loop to exit and waking it up.
+         * It does not directly close file descriptors; resource cleanup is handled elsewhere.
          * After calling this method, the reactor should not be used again.
          * @throws std::runtime_error if shutdown fails.   
         */

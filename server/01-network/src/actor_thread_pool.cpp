@@ -46,7 +46,6 @@ void ActorThreadPool::submit(std::shared_ptr<IEventHandler> actor, IO_Task task)
     }
     std::mutex& actor_mutex =  get_actor_lock(actor.get());
     std::unique_lock<std::mutex> actor_lock(actor_mutex);
-    std::vector<IEventHandler*>::iterator it;
     bool is_ready = false;
     {
         std::shared_lock<std::shared_mutex> find_lock(ready_actors_mutex);

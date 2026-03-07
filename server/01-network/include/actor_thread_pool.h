@@ -1,5 +1,5 @@
-#ifndef THREADPOOL_H
-#define THREADPOOL_H
+#ifndef ACTOR_THREAD_POOL_H
+#define ACTOR_THREAD_POOL_H
 
 #include <vector>
 #include <queue>
@@ -10,6 +10,8 @@
 #include "eventhandler.h"
 #include <atomic>
 #include <algorithm>
+#include <memory>
+#include <mutex>
 
 typedef std::function<void()> IO_Task;
 

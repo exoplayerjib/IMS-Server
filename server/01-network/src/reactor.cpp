@@ -107,7 +107,7 @@ Reactor::~Reactor() {
 }
 
 void Reactor::shutdown() {
-    if (!running.exchange(false)) {
+    if (!running) {
         return; // Already shut down
     }
     running = false;
