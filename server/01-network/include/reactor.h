@@ -18,6 +18,7 @@ class Reactor {
         int port;
         int epoll_fd;
         int server_fd;
+        int wakeup_fd;
         ActorThreadPool thread_pool;
         std::unordered_map<int, std::shared_ptr<IEventHandler>> handlers;
         std::thread::id main_thread;
@@ -44,7 +45,7 @@ class Reactor {
         * @param port The port on which the server will listen.
         */
         Reactor(int thread_num, int port);
-        ~Reactor() = default;
+        ~Reactor();
         /*
         * Start the reactor event loop.
         */
@@ -56,6 +57,12 @@ class Reactor {
          * @param event The epoll event to update with.
          */
         void update_ops(int fd, epoll_event& event);
+
+        /**
+         * Wake up the reactor's event loop, causing it to re-check for events.
+         * This is used to ensure that updates to the epoll instance are processed promptly.
+         */
+        void wakeup();
 
         Reactor(const Reactor&) = delete;
         Reactor& operator=(const Reactor&) = delete;

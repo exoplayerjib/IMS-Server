@@ -9,6 +9,7 @@
 #include <functional>
 #include "eventhandler.h"
 #include <atomic>
+#include <algorithm>
 
 typedef std::function<void()> IO_Task;
 

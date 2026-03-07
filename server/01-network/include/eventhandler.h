@@ -6,6 +6,7 @@ class IEventHandler {
         virtual void handle_read() = 0;
         virtual void handle_write() = 0;
         virtual int get_fd() = 0;
+        virtual ~IEventHandler() = default;
 };
 
 #endif

@@ -5,6 +5,7 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include "connection_handler.h"
+#include <sys/eventfd.h>
 
 Reactor::Reactor(int thread_num, int port) :  port(port) , thread_pool(thread_num) {
     if (thread_num <= 0) {
@@ -32,7 +33,7 @@ Reactor::Reactor(int thread_num, int port) :  port(port) , thread_pool(thread_nu
     if (bind(server_fd, (sockaddr*)&server_addr, sizeof(server_addr)) == -1){
         std::cerr << "Server socket could not bind to address." << std::endl;
         close(server_fd);
-        exit(EXIT_FAILURE);
+        throw std::runtime_error("Failed to bind server socket.");
     }
 
     #ifdef DEBUG
@@ -42,7 +43,7 @@ Reactor::Reactor(int thread_num, int port) :  port(port) , thread_pool(thread_nu
     if(listen(server_fd, 128) == -1){
         std::cerr << "Failed to set the server socket to listen mode." << std::endl;
         close(server_fd);
-        exit(EXIT_FAILURE);
+        throw std::runtime_error("Failed to set server socket to listen mode.");
     }
 
     #ifdef DEBUG
@@ -53,21 +54,40 @@ Reactor::Reactor(int thread_num, int port) :  port(port) , thread_pool(thread_nu
     if (epoll_fd == -1) {
         std::cerr << "epoll_create1 failed." << std::endl;
         close(server_fd);
-        exit(EXIT_FAILURE);
+        throw std::runtime_error("Failed to create epoll instance.");
     }
     
     #ifdef DEBUG
     std::cout << "Epoll instance created." << std::endl;
     #endif
 
-    epoll_event event;
+    wakeup_fd = eventfd(0, EFD_NONBLOCK);
+    if (wakeup_fd == -1) {
+        std::cerr << "Failed to create wakeup eventfd." << std::endl;
+        close(server_fd);
+        close(epoll_fd);
+        throw std::runtime_error("Failed to create wakeup eventfd.");
+    }
+
+    epoll_event event {};
     event.events = EPOLLIN;
     event.data.fd = server_fd;
-    if (epoll_ctl(epoll_fd,EPOLL_CTL_ADD,server_fd,&event) == -1){
+    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD ,server_fd, &event) == -1){
         std::cerr << "Failed to add server socket to epoll in EPOLLIN mode." << std::endl;
         close(server_fd);
         close(epoll_fd);
-        exit(EXIT_FAILURE);
+        throw std::runtime_error("Failed to add server socket to epoll.");
+    }
+
+    epoll_event wakeup_event {};
+    wakeup_event.events = EPOLLIN;
+    wakeup_event.data.fd = wakeup_fd;
+    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, wakeup_fd, &wakeup_event) == -1) {
+        std::cerr << "Failed to add wakeup eventfd to epoll." << std::endl;
+        close(server_fd);
+        close(epoll_fd);
+        close(wakeup_fd);
+        throw std::runtime_error("Failed to add wakeup eventfd to epoll.");
     }
 
     #ifdef DEBUG
@@ -82,11 +102,20 @@ Reactor::Reactor(int thread_num, int port) :  port(port) , thread_pool(thread_nu
 Reactor::~Reactor() {
     close(server_fd);
     close(epoll_fd);
+    close(wakeup_fd);
+}
+
+void Reactor::wakeup() {
+    uint64_t one = 1;
+    ssize_t result = write(wakeup_fd, &one, sizeof(one));
+    if (result == -1) {
+        std::cerr << "Failed to write to wakeup eventfd." << std::endl;
+    }
 }
 
 void Reactor::register_connection(std::shared_ptr<IEventHandler> handler){ 
     int fd = handler->get_fd();
-    epoll_event event;
+    epoll_event event {};
     event.events = EPOLLIN | EPOLLRDHUP;
     event.data.fd = fd;
 
@@ -113,6 +142,11 @@ void Reactor::start() {
             }
             for (int i = 0; i < num_events; i++){
                 int fd = events[i].data.fd;
+                if (fd == wakeup_fd) {
+                    uint64_t val;
+                    read(wakeup_fd, &val, sizeof(val)); 
+                    continue;
+                }
                 if (fd == server_fd) {
                     struct sockaddr_in client_addr = {0}; 
                     socklen_t c_len = sizeof(client_addr); 
@@ -198,5 +232,6 @@ void Reactor::update_ops(int fd, epoll_event& event){
                 }
             });
         }
+        wakeup();
     }
 }

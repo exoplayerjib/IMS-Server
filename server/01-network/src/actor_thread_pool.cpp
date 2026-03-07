@@ -40,6 +40,9 @@ void ActorThreadPool::submit(std::shared_ptr<IEventHandler> actor, IO_Task task)
     if (actor == nullptr) {
         throw std::invalid_argument("Actor pointer cannot be null.");
     }
+    if (stop) {
+        throw std::runtime_error("Cannot submit task to ActorThreadPool after shutdown.");
+    }
     std::mutex& actor_mutex =  get_actor_lock(actor.get());
     std::unique_lock<std::mutex> actor_lock(actor_mutex);
     std::vector<IEventHandler*>::iterator it;
@@ -50,8 +53,8 @@ void ActorThreadPool::submit(std::shared_ptr<IEventHandler> actor, IO_Task task)
     }
 
     if (is_ready) {
-        std::unique_lock<std::shared_mutex> addtasktoqueue(actor_tasks_mutex);
         std::queue<IO_Task>& qu = pending_tasks_of(actor.get());
+        std::unique_lock<std::shared_mutex> write_lock(actor_tasks_mutex);
         qu.emplace(task);
     }
     else {
@@ -114,7 +117,7 @@ void ActorThreadPool::complete(std::shared_ptr<IEventHandler> actor){
     std::queue<IO_Task>& pend = pending_tasks_of(actor.get());
     if (pend.empty()){
         std::unique_lock<std::shared_mutex> write_lock(ready_actors_mutex);
-        ready_actors.erase(std::remove(ready_actors.begin(),ready_actors.end(),actor), ready_actors.end());
+        ready_actors.erase(std::remove(ready_actors.begin(),ready_actors.end(),actor.get()), ready_actors.end());
     }
     else{
         IO_Task next_task = std::move(pend.front());
