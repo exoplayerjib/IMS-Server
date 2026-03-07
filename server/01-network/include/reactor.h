@@ -5,20 +5,21 @@
 #include <thread>
 #include <unordered_map>
 #include "eventhandler.h"
+#include "actor_thread_pool.h"
 #include <sys/epoll.h>
 #include <functional>
 #include <mutex>
-
+#include <memory>
 
 typedef std::function<void()> UpdateTask; // update tasks.
 
 class Reactor {
     private:
-        int thread_num;
         int port;
         int epoll_fd;
         int server_fd;
-        std::unordered_map<int, IEventHandler*> handlers;
+        ActorThreadPool thread_pool;
+        std::unordered_map<int, std::shared_ptr<IEventHandler>> handlers;
         std::thread::id main_thread;
         std::vector<UpdateTask> update_queue;
         std::mutex update_queue_mutex;
@@ -28,12 +29,12 @@ class Reactor {
         * This is called in the main event loop to ensure that updates to the epoll instance
         * are performed in a thread-safe manner.
         */
-        void exec_update_queue();
+        void exec_reactor_tasks();
         /*
         * Register a new connection to the epoll with EPOLLIN.
         * @param handler The event handler for the connection.
         */
-        void register_connection(IEventHandler* handler);
+        void register_connection(std::shared_ptr<IEventHandler> handler);
 
 
     public:
@@ -43,7 +44,7 @@ class Reactor {
         * @param port The port on which the server will listen.
         */
         Reactor(int thread_num, int port);
-        ~Reactor();
+        ~Reactor() = default;
         /*
         * Start the reactor event loop.
         */
@@ -56,6 +57,11 @@ class Reactor {
          */
         void update_ops(int fd, epoll_event& event);
 
+        Reactor(const Reactor&) = delete;
+        Reactor& operator=(const Reactor&) = delete;
+        Reactor(Reactor&&) = delete;
+        Reactor& operator=(Reactor&&) = delete;
+        
 };
 
 #endif

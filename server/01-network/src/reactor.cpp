@@ -4,8 +4,17 @@
 #include <netinet/in.h>
 #include <unistd.h>
 #include <arpa/inet.h>
+#include "connection_handler.h"
 
-Reactor::Reactor(int thread_num, int port) : thread_num(thread_num), port(port) {
+Reactor::Reactor(int thread_num, int port) :  port(port) , thread_pool(thread_num) {
+    if (thread_num <= 0) {
+        std::cerr << "Thread number must be positive." << std::endl;
+        exit(EXIT_FAILURE);
+    }
+    if (port <= 0 || port > 65535) {
+        std::cerr << "Port number must be between 1 and 65535." << std::endl;
+        exit(EXIT_FAILURE);
+    }
     server_fd = socket(AF_INET,SOCK_STREAM | SOCK_NONBLOCK, 0);
     if (server_fd == -1){
         std::cerr << "Failed to create server socket." << std::endl;
@@ -65,7 +74,9 @@ Reactor::Reactor(int thread_num, int port) : thread_num(thread_num), port(port) 
     std::cout << "Server socket added to epoll instance." << std::endl;
     #endif
 
-    //TODO: add thread pool initialization here
+    #ifdef DEBUG
+    std::cout << "Reactor initialized with thread pool of size: " << thread_num << std::endl;
+    #endif
 }
 
 Reactor::~Reactor() {
@@ -73,10 +84,10 @@ Reactor::~Reactor() {
     close(epoll_fd);
 }
 
-void Reactor::register_connection(IEventHandler* handler){ 
+void Reactor::register_connection(std::shared_ptr<IEventHandler> handler){ 
     int fd = handler->get_fd();
     epoll_event event;
-    event.events = EPOLLIN;
+    event.events = EPOLLIN | EPOLLRDHUP;
     event.data.fd = fd;
 
     if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &event) == -1) {
@@ -95,7 +106,7 @@ void Reactor::start() {
         while (true) {
             epoll_event events[64];
             int num_events = epoll_wait(epoll_fd, events, 64, -1);
-            exec_update_queue();
+            exec_reactor_tasks();
             if (num_events == -1) {
                 std::cerr << "epoll_wait failed." << std::endl;
                 continue;
@@ -110,11 +121,25 @@ void Reactor::start() {
                         std::cerr << "Failed to create connection fd to client." << std::endl;
                         continue;
                     }
-                    //TODO: create connection handler here!
-                    register_connection(nullptr); //swap with the connection handler
+                    ConnectionHandler* handler = new ConnectionHandler(client_con_fd);
+                    std::shared_ptr<IEventHandler> handler_ptr(handler, [this,handler] 
+                        {
+                        this->thread_pool.remove_actor(handler);
+                        delete handler;
+                        });
+                    register_connection(handler_ptr);
                 }
                 else {
-                   if (handlers.find(fd) != handlers.end()) {
+                    if (handlers.find(fd) != handlers.end()) {
+                        if (events[i].events & (EPOLLRDHUP | EPOLLHUP | EPOLLERR)) {
+                           #ifdef DEBUG
+                           std::cout << "Client disconnected or error on fd: " << fd << std::endl;
+                           #endif
+                           epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, nullptr);
+                           handlers.erase(fd);
+                           continue;
+                       }
+
                        if (events[i].events & EPOLLIN) {
                            handlers[fd]->handle_read();
                        }
@@ -131,9 +156,14 @@ void Reactor::start() {
     }
 }
 
-void Reactor::exec_update_queue(){
-    std::lock_guard<std::mutex> lock(update_queue_mutex);
-    for (const UpdateTask& task : update_queue) {
+void Reactor::exec_reactor_tasks(){
+    std::vector<UpdateTask> current_tasks; 
+    {
+        std::lock_guard<std::mutex> lock(update_queue_mutex);
+        current_tasks = std::move(update_queue);
+        update_queue.clear();
+    }
+    for (const UpdateTask& task : current_tasks) {
         try{
             task();
         }

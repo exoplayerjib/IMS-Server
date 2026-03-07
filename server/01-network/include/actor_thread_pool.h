@@ -65,7 +65,7 @@ class ActorThreadPool {
          *             the Executor.
          * @throws Whatever `Executor::execute` may throw (e.g. rejections).
          */
-        void execute(IEventHandler* actor, IO_Task task);
+        void execute(std::shared_ptr<IEventHandler> actor, IO_Task task);
 
         /**
          * @brief Called after a scheduled task completes; schedules next task
@@ -75,7 +75,7 @@ class ActorThreadPool {
          * @param actor Actor whose completed task triggered this call.
          * @throws std::bad_alloc if enqueuing or map operations allocate and fail.
          */
-        void complete(IEventHandler* actor);
+        void complete(std::shared_ptr<IEventHandler> actor);
 
         /**
          * @brief Return a reference to the pending task queue for `actor`.
@@ -121,14 +121,14 @@ class ActorThreadPool {
          * task is scheduled immediately. If the actor is already running,
          * the task is appended to the actor's FIFO pending queue.
          *
-         * @param actor Non-null pointer to the actor that owns the task.
+         * @param actor Non-null shared pointer to the actor that owns the task.
          * @param task The callable to execute; it will be moved/copied into
          *             internal structures and executed on a worker thread.
          * @throws std::invalid_argument if `actor` is nullptr.
          * @throws std::bad_alloc if internal containers need to grow.
          * @throws Whatever `Executor::execute` may throw when scheduling work.
          */
-        void submit(IEventHandler* actor, IO_Task task);
+        void submit(std::shared_ptr<IEventHandler> actor, IO_Task task);
 
         /**
          * @brief Stop accepting new work and shut down the backing Executor.
