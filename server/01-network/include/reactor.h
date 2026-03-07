@@ -10,6 +10,7 @@
 #include <functional>
 #include <mutex>
 #include <memory>
+#include <atomic>
 
 typedef std::function<void()> UpdateTask; // update tasks.
 
@@ -19,6 +20,7 @@ class Reactor {
         int epoll_fd;
         int server_fd;
         int wakeup_fd;
+        std::atomic<bool> running {true};
         ActorThreadPool thread_pool;
         std::unordered_map<int, std::shared_ptr<IEventHandler>> handlers;
         std::thread::id main_thread;
@@ -63,6 +65,15 @@ class Reactor {
          * This is used to ensure that updates to the epoll instance are processed promptly.
          */
         void wakeup();
+
+
+        /*
+        * Shutdown the reactor and clean up resources.
+         * This will stop the event loop and close all file descriptors.
+         * After calling this method, the reactor should not be used again.
+         * @throws std::runtime_error if shutdown fails.   
+        */
+        void shutdown();
 
         Reactor(const Reactor&) = delete;
         Reactor& operator=(const Reactor&) = delete;

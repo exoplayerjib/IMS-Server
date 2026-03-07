@@ -6,20 +6,21 @@
 #include <arpa/inet.h>
 #include "connection_handler.h"
 #include <sys/eventfd.h>
+#include <stdexcept>
 
 Reactor::Reactor(int thread_num, int port) :  port(port) , thread_pool(thread_num) {
     if (thread_num <= 0) {
         std::cerr << "Thread number must be positive." << std::endl;
-        exit(EXIT_FAILURE);
+        throw std::runtime_error("Invalid thread number.");
     }
     if (port <= 0 || port > 65535) {
         std::cerr << "Port number must be between 1 and 65535." << std::endl;
-        exit(EXIT_FAILURE);
+        throw std::runtime_error("Invalid port number.");
     }
     server_fd = socket(AF_INET,SOCK_STREAM | SOCK_NONBLOCK, 0);
     if (server_fd == -1){
         std::cerr << "Failed to create server socket." << std::endl;
-        exit(EXIT_FAILURE);
+        throw std::runtime_error("Failed to create server socket.");
     }
     struct sockaddr_in server_addr = {0};
     server_addr.sin_family = AF_INET;
@@ -105,6 +106,14 @@ Reactor::~Reactor() {
     close(wakeup_fd);
 }
 
+void Reactor::shutdown() {
+    if (!running.exchange(false)) {
+        return; // Already shut down
+    }
+    running = false;
+    wakeup(); // Wake up the event loop to exit
+}
+
 void Reactor::wakeup() {
     uint64_t one = 1;
     ssize_t result = write(wakeup_fd, &one, sizeof(one));
@@ -132,7 +141,7 @@ void Reactor::register_connection(std::shared_ptr<IEventHandler> handler){
 void Reactor::start() {
     this->main_thread = std::this_thread::get_id();
     try{
-        while (true) {
+        while (running) {
             epoll_event events[64];
             int num_events = epoll_wait(epoll_fd, events, 64, -1);
             exec_reactor_tasks();
@@ -164,7 +173,8 @@ void Reactor::start() {
                     register_connection(handler_ptr);
                 }
                 else {
-                    if (handlers.find(fd) != handlers.end()) {
+                    auto it = handlers.find(fd);
+                    if (it != handlers.end()) {
                         if (events[i].events & (EPOLLRDHUP | EPOLLHUP | EPOLLERR)) {
                            #ifdef DEBUG
                            std::cout << "Client disconnected or error on fd: " << fd << std::endl;
@@ -172,14 +182,14 @@ void Reactor::start() {
                            epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, nullptr);
                            handlers.erase(fd);
                            continue;
-                       }
+                        }  
 
-                       if (events[i].events & EPOLLIN) {
-                           handlers[fd]->handle_read();
-                       }
-                       if (events[i].events & EPOLLOUT) {
-                           handlers[fd]->handle_write();
-                       }
+                        if (events[i].events & EPOLLIN) {
+                           it->second->handle_read();
+                        }
+                        if (events[i].events & EPOLLOUT) {
+                           it->second->handle_write();
+                        }
                    }
                 }   
             }

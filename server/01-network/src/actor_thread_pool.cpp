@@ -1,5 +1,6 @@
 #include "actor_thread_pool.h"
 #include <iostream>
+#include <stdexcept>
 
 ActorThreadPool::ActorThreadPool(int thread_num) : threadpool(thread_num), stop(false) {}
 
@@ -11,7 +12,7 @@ std::mutex& ActorThreadPool::get_actor_lock(IEventHandler* actor) {
     if (actor == nullptr) {
         throw std::invalid_argument("Actor pointer cannot be null.");
     }
-    int hashval = std::hash<IEventHandler*>{}(actor);
+    size_t hashval = std::hash<IEventHandler*>{}(actor);
     return actor_locks[hashval%256];
 }
 
@@ -53,8 +54,8 @@ void ActorThreadPool::submit(std::shared_ptr<IEventHandler> actor, IO_Task task)
     }
 
     if (is_ready) {
-        std::queue<IO_Task>& qu = pending_tasks_of(actor.get());
         std::unique_lock<std::shared_mutex> write_lock(actor_tasks_mutex);
+        std::queue<IO_Task>& qu = pending_tasks_of(actor.get());
         qu.emplace(task);
     }
     else {
