@@ -6,11 +6,12 @@
 #include <functional>
 #include "reactor.h"
 #include <queue>
-#include <shared_mutex>
+#include <mutex>
 #include <cstdint>
 
 /// Size in bytes of the fixed-length message header that precedes every payload.
 #define MESSAGE_HEADER_SIZE 4
+#define MAX_PAYLOAD_SIZE (1024 * 1024 * 10) // 10 MiB maximum payload size to prevent abuse
 
 /**
  * @brief Holds the state of an in-progress read or write operation on a socket.
@@ -65,7 +66,7 @@ class ConnectionHandler : public IEventHandler {
         ReadState read_state;                ///< Current framing phase for inbound data.
         ByteStream current_read_bstream;     ///< Accumulates bytes for the message currently being received.
         std::queue<ByteStream> write_queue;  ///< Ordered queue of outbound frames pending transmission.
-        std::shared_mutex write_queue_mutex; ///< Guards @c write_queue for concurrent producers.
+        std::mutex write_queue_mutex;        ///< Guards @c write_queue for concurrent producers.
         Reactor* reactor;                    ///< Non-owning pointer to the parent reactor used for epoll updates.
         bool closed;                         ///< Set to @c true when the peer closes the connection or an unrecoverable error occurs.
 
@@ -152,6 +153,10 @@ class ConnectionHandler : public IEventHandler {
          *         occurred; @c false otherwise.
          */
         bool is_closed() const override;
+        
+        /// @brief Enqueues a message for sending to the client. and updates epoll interest to include @c EPOLLOUT.
+        /// @param message The complete message frame (including header) to send.
+        void send_message(const ByteStream& message);
 };
 
 #endif // CONNECTION_HANDLER_H

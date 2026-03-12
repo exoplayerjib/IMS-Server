@@ -43,7 +43,7 @@ std::function<void()> ConnectionHandler::handle_read(){
         {
             // Process the payload here. For demonstration, we just print it.
             // implement this when the the TLS layer is implemented.
-            std::string payload_str(payload_buffer.begin(), payload_buffer.end());
+            std::string payload_str(payload_buffer.begin() + MESSAGE_HEADER_SIZE, payload_buffer.end());
             std::cout << "Received payload: " << payload_str << std::endl;  
         };
         current_read_bstream = {};
@@ -63,7 +63,13 @@ void ConnectionHandler::read_header() {
         if (current_read_bstream.total_bytes_processed == MESSAGE_HEADER_SIZE) {
             uint32_t network_payload_size;
             std::memcpy(&network_payload_size, current_read_bstream.buffer.data(), MESSAGE_HEADER_SIZE);
-            current_read_bstream.expected_size = ntohl(network_payload_size) + MESSAGE_HEADER_SIZE;
+            uint32_t raw_payload_size = ntohl(network_payload_size);
+            if (raw_payload_size > MAX_PAYLOAD_SIZE) {
+                std::cerr << "Payload size " << raw_payload_size << " exceeds maximum allowed. Closing connection." << std::endl;
+                closed = true;
+                return;
+            }
+            current_read_bstream.expected_size = raw_payload_size + MESSAGE_HEADER_SIZE;
             current_read_bstream.buffer.resize(current_read_bstream.expected_size);
             read_state = ReadState::READ_PAYLOAD;
             read_payload();
@@ -77,6 +83,7 @@ void ConnectionHandler::read_header() {
 void ConnectionHandler::read_payload(){
     size_t bytes_left = current_read_bstream.expected_size - current_read_bstream.total_bytes_processed;
     char* cur_pos = current_read_bstream.buffer.data() + current_read_bstream.total_bytes_processed;
+    if (bytes_left == 0) return;
     ssize_t bytes_received = recv(fd, cur_pos, bytes_left, 0);
     if (bytes_received > 0){
         current_read_bstream.total_bytes_processed += bytes_received;
@@ -89,13 +96,13 @@ void ConnectionHandler::read_payload(){
 
 void ConnectionHandler::handle_write() {
     if (closed) return;
-    //std::unique_lock<std::shared_mutex> write_lock(write_queue_mutex);
+    std::lock_guard<std::mutex> write_lock(write_queue_mutex);
     while (!write_queue.empty()) {
         ByteStream& bstream = write_queue.front();
         if (bstream.total_bytes_processed < bstream.expected_size){
             size_t bytes_left = bstream.expected_size - bstream.total_bytes_processed;
             char* cur_pos = bstream.buffer.data() + bstream.total_bytes_processed;
-            ssize_t bytes_sent = send(fd, cur_pos, bytes_left, 0);
+            ssize_t bytes_sent = send(fd, cur_pos, bytes_left, MSG_NOSIGNAL);
             if (bytes_sent > 0){
                 bstream.total_bytes_processed += bytes_sent;
                 if (bstream.total_bytes_processed == bstream.expected_size) { 
@@ -123,7 +130,7 @@ void ConnectionHandler::handle_write() {
 void ConnectionHandler::handle_io_error(ssize_t bytes_read) {
     if (bytes_read == 0){ 
         #ifdef DEBUG
-        std::cout << "recived 0 bytes in recv - fd " << fd << " closed the connection" << std::endl;
+        std::cout << "received 0 bytes in recv - fd " << fd << " closed the connection" << std::endl;
         #endif
         closed = true;
     }
@@ -137,6 +144,18 @@ void ConnectionHandler::handle_io_error(ssize_t bytes_read) {
             closed = true;
         }
     }
+}
+
+void ConnectionHandler::send_message(const ByteStream& message) {
+    if (closed) return;
+    {
+        std::lock_guard<std::mutex> write_lock(write_queue_mutex);
+        write_queue.push(message);
+    }
+    epoll_event event {};
+    event.events = EPOLLIN | EPOLLOUT | EPOLLRDHUP;
+    event.data.fd = fd;
+    reactor->update_ops(fd, event);
 }
 
 
