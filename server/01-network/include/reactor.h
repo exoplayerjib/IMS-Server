@@ -76,6 +76,8 @@ class Reactor {
         */
         void shutdown();
 
+        void close_connection(int fd);
+
         Reactor(const Reactor&) = delete;
         Reactor& operator=(const Reactor&) = delete;
         Reactor(Reactor&&) = delete;

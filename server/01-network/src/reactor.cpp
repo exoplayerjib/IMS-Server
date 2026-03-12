@@ -164,7 +164,7 @@ void Reactor::start() {
                         std::cerr << "Failed to create connection fd to client." << std::endl;
                         continue;
                     }
-                    ConnectionHandler* handler = new ConnectionHandler(client_con_fd);
+                    ConnectionHandler* handler = new ConnectionHandler(client_con_fd, this);
                     std::shared_ptr<IEventHandler> handler_ptr(handler, [this,handler] 
                         {
                         this->thread_pool.remove_actor(handler);
@@ -175,7 +175,13 @@ void Reactor::start() {
                 else {
                     auto it = handlers.find(fd);
                     if (it != handlers.end()) {
-                        if (events[i].events & (EPOLLRDHUP | EPOLLHUP | EPOLLERR)) {
+                        if (events[i].events & EPOLLIN) {
+                            IO_Task read_task = it->second->handle_read();
+                            if (read_task) {
+                                thread_pool.submit(it->second, read_task);
+                            }
+                        }
+                        if (it->second->is_closed() || events[i].events & (EPOLLRDHUP | EPOLLHUP | EPOLLERR)) {
                            #ifdef DEBUG
                            std::cout << "Client disconnected or error on fd: " << fd << std::endl;
                            #endif
@@ -183,12 +189,15 @@ void Reactor::start() {
                            handlers.erase(fd);
                            continue;
                         }  
-
-                        if (events[i].events & EPOLLIN) {
-                           it->second->handle_read();
-                        }
                         if (events[i].events & EPOLLOUT) {
                            it->second->handle_write();
+                        }
+                        if (it->second->is_closed()) {
+                            #ifdef DEBUG
+                            std::cout << "Client disconnected after write on fd: " << fd << std::endl;
+                            #endif
+                            epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, nullptr);
+                            handlers.erase(fd);
                         }
                    }
                 }   
@@ -244,4 +253,9 @@ void Reactor::update_ops(int fd, epoll_event& event){
         }
         wakeup();
     }
+}
+
+void Reactor::close_connection(int fd) {
+    epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, nullptr);
+    handlers.erase(fd);
 }
