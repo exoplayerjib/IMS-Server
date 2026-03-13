@@ -9,43 +9,17 @@
 #include <mutex>
 #include <cstdint>
 
-/// Size in bytes of the fixed-length message header that precedes every payload.
-#define MESSAGE_HEADER_SIZE 4
-#define MAX_PAYLOAD_SIZE (1024 * 1024 * 10) // 10 MiB maximum payload size to prevent abuse
-
-/**
- * @brief Holds the state of an in-progress read or write operation on a socket.
- *
- * Each message on the wire is framed as a 4-byte big-endian length prefix
- * followed by the payload bytes. A @c ByteStream tracks how many bytes of that
- * combined frame have been transferred so far, allowing partial reads/writes to
- * be resumed across multiple epoll wakeups.
- *
- * @note On construction the internal buffer is pre-allocated to
- *       @c MESSAGE_HEADER_SIZE bytes so the first @c recv call goes directly
- *       into a ready buffer.
- */
-struct ByteStream {
-    std::vector<char> buffer;          ///< Raw byte buffer holding header + payload data.
-    size_t total_bytes_processed;      ///< Number of bytes transferred so far.
-    uint32_t expected_size;            ///< Total frame size (header + payload) in bytes, populated once the header is fully received.
-    ByteStream() : buffer(MESSAGE_HEADER_SIZE), total_bytes_processed(0), expected_size(0) {}
-};
-
+/// Maximum size of the read buffer for incoming data.
+#define BYTESTREAM_SIZE 4096
+constexpr size_t MAX_MESSAGE_SIZE = 1024 * 1024 * 10; // 10 MiB
 /**
  * @brief Non-blocking event handler for a single accepted TCP connection.
  *
  * @c ConnectionHandler implements the @c IEventHandler interface and is driven
- * by the @c Reactor event loop via epoll. It uses a two-phase length-prefixed
- * framing protocol:
+ * by the @c Reactor event loop via epoll.
  *
- * 1. **Header phase** – reads exactly @c MESSAGE_HEADER_SIZE (4) bytes that
- *    encode the payload length as a network-byte-order @c uint32_t.
- * 2. **Payload phase** – reads exactly that many bytes of payload.
- *
- * Once a complete message is assembled, @c handle_read() returns a
- * @c std::function<void()> continuation that the @c Reactor dispatches to a
- * worker thread for processing, keeping I/O multiplexing off the hot path.
+ * On a read event, it reads available data from the socket into a fixed-size buffer
+ * and returns a continuation task containing the data for processing on a worker thread.
  *
  * Outbound messages are enqueued via the write queue and drained lazily by
  * @c handle_write() when epoll signals @c EPOLLOUT. After the queue is
@@ -56,37 +30,14 @@ struct ByteStream {
  */
 class ConnectionHandler : public IEventHandler {
     private:
-        /**
-         * @brief Tracks whether the handler is currently reading the header or
-         *        the payload portion of a message frame.
-         */
-        enum class ReadState { READ_HEADER, READ_PAYLOAD };
 
         int fd;                              ///< File descriptor for the accepted client socket.
-        ByteStream current_read_bstream;     ///< Accumulates bytes for the message currently being received.
-        std::queue<ByteStream> write_queue;  ///< Ordered queue of outbound frames pending transmission.
+        std::array<char, BYTESTREAM_SIZE> current_read_bytestream;     ///< Buffer for assembling incoming message frames.
+        std::queue<std::vector<char>> write_queue;   ///< Queue of complete message frames awaiting transmission to the client.
+        size_t current_write_offset;            ///< Tracks progress of the current message being sent from the front of @c write_queue.
         std::mutex write_queue_mutex;        ///< Guards @c write_queue for concurrent producers.
         Reactor* reactor;                    ///< Non-owning pointer to the parent reactor used for epoll updates.
-        ReadState read_state;                ///< Current framing phase for inbound data.
         bool closed;                         ///< Set to @c true when the peer closes the connection or an unrecoverable error occurs.
-
-        /**
-         * @brief Attempts to read the 4-byte length header from the socket.
-         *
-         * If the full header is received the expected frame size is calculated,
-         * the buffer is resized to fit header + payload, and the state machine
-         * advances to @c READ_PAYLOAD, immediately attempting a payload read.
-         */
-        void read_header();
-
-        /**
-         * @brief Attempts to read remaining payload bytes from the socket.
-         *
-         * Called after the header has been fully received. Returns when the
-         * payload is complete or when @c recv would block (@c EAGAIN /
-         * @c EWOULDBLOCK).
-         */
-        void read_payload();
 
         /**
          * @brief Centralised error handler for @c recv / @c send return values.
@@ -119,16 +70,14 @@ class ConnectionHandler : public IEventHandler {
         ConnectionHandler& operator=(ConnectionHandler&&) = delete;
 
         /**
-         * @brief Drives the inbound framing state machine on an @c EPOLLIN event.
+         * @brief Reads data from the socket on an @c EPOLLIN event.
          *
-         * Reads as many bytes as are available without blocking, advancing
-         * through the header and payload phases. When a complete message frame
-         * has been assembled the buffer is moved into a returned continuation
-         * that the @c Reactor can dispatch to a worker thread.
+         * Reads up to @c BYTESTREAM_SIZE bytes from the file descriptor.
+         * The read data is moved into a returned continuation that the @c Reactor 
+         * can dispatch to a worker thread.
          *
-         * @return A callable containing the fully-received payload if a complete
-         *         message was assembled this call; @c nullptr otherwise (partial
-         *         read, connection closed, or error).
+         * @return A callable containing the received data; @c nullptr on error
+         *         or if the connection is closed.
          */
         std::function<void()> handle_read() override;
 
@@ -154,9 +103,9 @@ class ConnectionHandler : public IEventHandler {
          */
         bool is_closed() const override;
         
-        /// @brief Enqueues a message for sending to the client. and updates epoll interest to include @c EPOLLOUT.
-        /// @param message The complete message frame (including header) to send.
-        void send_message(const ByteStream& message);
+         /// @brief Enqueues an outbound byte buffer for sending to the client and updates epoll interest to include @c EPOLLOUT.
+         /// @param message Raw message bytes to send; no protocol framing or headers are added by this handler.
+        void send_message(const std::vector<char>& message);
 };
 
 #endif // CONNECTION_HANDLER_H
