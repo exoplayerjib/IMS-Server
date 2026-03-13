@@ -11,7 +11,7 @@
 
 /// Maximum size of the read buffer for incoming data.
 #define BYTESTREAM_SIZE 4096
-
+constexpr size_t MAX_MESSAGE_SIZE = 1024 * 1024 * 10; // 10 MiB
 /**
  * @brief Non-blocking event handler for a single accepted TCP connection.
  *
@@ -103,8 +103,8 @@ class ConnectionHandler : public IEventHandler {
          */
         bool is_closed() const override;
         
-        /// @brief Enqueues a message for sending to the client. and updates epoll interest to include @c EPOLLOUT.
-        /// @param message The complete message frame (including header) to send.
+         /// @brief Enqueues an outbound byte buffer for sending to the client and updates epoll interest to include @c EPOLLOUT.
+         /// @param message Raw message bytes to send; no protocol framing or headers are added by this handler.
         void send_message(const std::vector<char>& message);
 };
 

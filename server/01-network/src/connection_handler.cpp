@@ -34,10 +34,13 @@ std::function<void()> ConnectionHandler::handle_read(){
     }
     std::vector<char> aggregate;
     while (true) {
+        if (aggregate.size() + BYTESTREAM_SIZE >= MAX_MESSAGE_SIZE) break; // defend against
+                                                                           // malicious clients sending unbounded data.
+
         ssize_t bytes_read = recv(fd, current_read_bytestream.data(), BYTESTREAM_SIZE, 0);
         if (bytes_read > 0) {
             aggregate.insert(aggregate.end(),
-             current_read_bytestream.data(),
+            current_read_bytestream.data(),
             current_read_bytestream.data() + bytes_read);
             continue;
         }
@@ -63,6 +66,10 @@ void ConnectionHandler::handle_write() {
     std::lock_guard<std::mutex> write_lock(write_queue_mutex);
     while (!write_queue.empty()) {
         const std::vector<char>& current_messageframe = write_queue.front();
+        if (current_messageframe.empty()){
+            write_queue.pop();
+            continue;
+        }
         ssize_t bytes_written = send(fd, current_messageframe.data() + current_write_offset, current_messageframe.size() - current_write_offset, MSG_NOSIGNAL);
         if (bytes_written > 0) {
             current_write_offset += bytes_written;
