@@ -43,8 +43,8 @@ std::function<void()> ConnectionHandler::handle_read(){
         {
             // Process the payload here. For demonstration, we just print it.
             // implement this when the the TLS layer is implemented.
-            std::string payload_str(payload_buffer.begin() + MESSAGE_HEADER_SIZE, payload_buffer.end());
-            std::cout << "Received payload: " << payload_str << std::endl;  
+            // std::string payload_str(payload_buffer.begin() + MESSAGE_HEADER_SIZE, payload_buffer.end());
+            std::cout << "Received payload with size " << payload_buffer.size() - MESSAGE_HEADER_SIZE << " bytes." << std::endl;
         };
         current_read_bstream = {};
         read_state = ReadState::READ_HEADER;
