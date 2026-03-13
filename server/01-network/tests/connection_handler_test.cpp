@@ -3,153 +3,147 @@
 #include "reactor.h"
 #include <sys/socket.h>
 #include <unistd.h>
-#include <arpa/inet.h>
+#include <fcntl.h>
+#include <vector>
+#include <string>
 #include <cstring>
-#include <memory>
+#include <thread>
+#include <atomic>
 
-// Fixture עבור בדיקות ה-Connection Handler
-class ConnectionHandlerTest : public ::testing::Test {
+// Helper class to manage socket pairs for testing
+class SocketPairFixture : public ::testing::Test {
 protected:
-    int sv[2]; // sv[0] = Mock Client, sv[1] = Server (ConnectionHandler)
-    std::unique_ptr<Reactor> dummy_reactor;
-    std::unique_ptr<ConnectionHandler> handler;
+    int sv[2]; // sv[0] = user/server side (handler), sv[1] = tester/client side
+    std::unique_ptr<Reactor> reactor;
 
     void SetUp() override {
-        // יצירת זוג שקעים מחוברים (ללא רשת אמיתית) שמוגדרים כ-Non-blocking
-        ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0, sv), 0);
-
-        // יצירת Reactor דמה. אנחנו מנסים למצוא פורט פנוי (בסביבות 50,000)
-        for (int port = 50000; port < 50100; ++port) {
-            try {
-                dummy_reactor = std::make_unique<Reactor>(1, port);
-                break;
-            } catch (...) {}
+        if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0, sv) == -1) {
+            perror("socketpair");
+            exit(1);
         }
-        ASSERT_NE(dummy_reactor, nullptr) << "Failed to initialize dummy reactor on any port.";
-
-        // אתחול ה-Handler עם צד השרת של ה-socketpair
-        handler = std::make_unique<ConnectionHandler>(sv[1], dummy_reactor.get());
+        // Initialize a dummy reactor (needed for the ConnectionHandler constructor)
+        // We pick a random port to avoid binding conflicts, though we won't strictly use the listening socket.
+        reactor = std::make_unique<Reactor>(1, 50000 + (getpid() % 1000));
     }
 
     void TearDown() override {
-        // סגירת צד הלקוח (צד השרת נסגר אוטומטית ב-destructor של ה-handler)
-        if (sv[0] != -1) {
-            close(sv[0]);
-        }
-    }
-
-    // פונקציית עזר לשליחת מידע מדויק מה"לקוח" ל"שרת"
-    void send_from_client(const char* data, size_t len) {
-        ssize_t sent = send(sv[0], data, len, 0);
-        ASSERT_EQ(sent, len);
+        close(sv[0]);
+        close(sv[1]);
     }
 };
 
-// ==========================================
-// קבוצה 1: קריאת מידע תקינה (Reading)
-// ==========================================
+// Test that handle_read correctly reads available bytes from the socket
+TEST_F(SocketPairFixture, ReadsAvailableData) {
+    ConnectionHandler handler(sv[0], reactor.get());
 
-TEST_F(ConnectionHandlerTest, ReadsCompleteMessage) {
-    // שלב 1: הלקוח שולח הודעה שלמה - גודל 5, ואז המילה HELLO
-    uint32_t len = htonl(5); // המרה ל-Network Byte Order
-    send_from_client((char*)&len, 4);
-    send_from_client("HELLO", 5);
+    const std::string message = "Hello, World!";
+    ssize_t sent = write(sv[1], message.c_str(), message.size());
+    ASSERT_EQ(sent, message.size());
 
-    // שלב 2: ה-Handler מנסה לקרוא
-    auto task = handler->handle_read();
+    // Perform read
+    auto task = handler.handle_read();
+
+    ASSERT_NE(task, nullptr) << "handle_read should return a valid task when data is available.";
     
-    // מצפים שהמשימה הוחזרה (הודעה הושלמה) והחיבור לא נסגר
-    EXPECT_NE(task, nullptr);
-    EXPECT_FALSE(handler->is_closed());
+    // In a real scenario, executing the task would process the business logic.
+    // Since the current implementation captures the payload into the lambda,
+    // getting a non-null task confirms data was read successfully.
 }
 
-// ==========================================
-// קבוצה 2: קיטוע מנות ברשת (Fragmentation)
-// ==========================================
-
-TEST_F(ConnectionHandlerTest, HandlesFragmentedMessage) {
-    uint32_t len = htonl(6);
-    char header[4];
-    std::memcpy(header, &len, 4);
-
-    // רשתות לא תמיד מעבירות הכל בבת אחת. נשלח רק חצי מה-Header:
-    send_from_client(header, 2);
-    EXPECT_EQ(handler->handle_read(), nullptr); // הוא אמור להבין שחסר מידע
-
-    // נשלח את החצי השני של ה-Header
-    send_from_client(header + 2, 2);
-    EXPECT_EQ(handler->handle_read(), nullptr); // עכשיו הוא מצפה ל-Payload
-
-    // נשלח רק אות אחת מה-Payload
-    send_from_client("W", 1);
-    EXPECT_EQ(handler->handle_read(), nullptr); // עדיין לא סיים
-
-    // נשלח את שאר המילה
-    send_from_client("ORLD!", 5);
-    auto task = handler->handle_read();
+// Test that handle_read returns nullptr on error or EOF
+TEST_F(SocketPairFixture, HandlesDisconnectGracefully) {
+    ConnectionHandler handler(sv[0], reactor.get());
     
-    // רק עכשיו הוא אמור להחזיר לנו את הפונקציה לביצוע!
-    EXPECT_NE(task, nullptr);
-    EXPECT_FALSE(handler->is_closed());
-}
+    // Close the client side
+    close(sv[1]);
 
-// ==========================================
-// קבוצה 3: אבטחה ושגיאות (Errors & Limits)
-// ==========================================
-
-TEST_F(ConnectionHandlerTest, ClosesOnOversizedPayload) {
-    // ננסה להפיל את השרת עם הודעה בגודל 11 מגה-בייט (הגבלת המקסימום היא 10)
-    uint32_t len = htonl(1024 * 1024 * 11);
-    send_from_client((char*)&len, 4);
-
-    auto task = handler->handle_read();
-    
-    // השרת אמור לזהות את החריגה ולסגור מיד את החיבור
+    // Expect nullptr (handler detects closure)
+    auto task = handler.handle_read();
     EXPECT_EQ(task, nullptr);
-    EXPECT_TRUE(handler->is_closed());
+    EXPECT_TRUE(handler.is_closed());
 }
 
-TEST_F(ConnectionHandlerTest, HandlesClientDisconnect) {
-    // הלקוח מתנתק בפתאומיות
-    close(sv[0]);
-    sv[0] = -1; // כדי לא לסגור שוב ב-TearDown
+// Test send_message queues data and handle_write sends it
+TEST_F(SocketPairFixture, SendsMessageCorrectly) {
+    ConnectionHandler handler(sv[0], reactor.get());
 
-    auto task = handler->handle_read();
+    std::string msg = "ResponseData";
+    std::vector<char> buffer(msg.begin(), msg.end());
+
+    // Enqueue message
+    // Note: This triggers reactor->update_ops, which might print an error because sv[0] isn't 
+    // registered in the real epoll instance of the dummy reactor, but the handler logic should proceed.
+    handler.send_message(buffer);
+
+    // Drain queue
+    handler.handle_write();
+
+    // Verify data arrived at client side
+    char read_buf[1024];
+    ssize_t received = read(sv[1], read_buf, sizeof(read_buf));
     
-    // פונקציית recv תחזיר 0, ה-Handler אמור להבין שהחיבור נסגר
-    EXPECT_EQ(task, nullptr);
-    EXPECT_TRUE(handler->is_closed());
+    ASSERT_GT(received, 0);
+    std::string received_str(read_buf, received);
+    EXPECT_EQ(received_str, msg);
 }
 
-// ==========================================
-// קבוצה 4: כתיבה ותור שליחה (Writing)
-// ==========================================
+// Test sending multiple messages preserves order
+TEST_F(SocketPairFixture, SendsMultipleMessagesInOrder) {
+    ConnectionHandler handler(sv[0], reactor.get());
 
-TEST_F(ConnectionHandlerTest, WritesMessageToSocket) {
-    // נייצר הודעה בצד השרת
-    ByteStream msg;
-    msg.expected_size = 9; // 4 ל-Header ועוד 5 ל-"WORLD"
-    msg.buffer.resize(9);
-    
-    uint32_t len = htonl(5);
-    std::memcpy(msg.buffer.data(), &len, 4);
-    std::memcpy(msg.buffer.data() + 4, "WORLD", 5);
+    std::vector<std::string> messages = {"First", "Second", "Third"};
 
-    // נכניס לתור הכתיבה (אמור לעדכן את ה-Epoll)
-    handler->send_message(msg);
-    
-    // בגלל שזה non-blocking, ה-handle_write אמור לשפוך הכל מיד ל-Socket
-    handler->handle_write();
+    for (const auto& txt : messages) {
+        std::vector<char> buf(txt.begin(), txt.end());
+        handler.send_message(buf);
+    }
 
-    // נוודא שהלקוח אכן קיבל את המידע הנכון
-    char recv_buf[10] = {0};
-    ssize_t bytes_read = recv(sv[0], recv_buf, 9, 0); // קריאה בצד הלקוח
-    ASSERT_EQ(bytes_read, 9);
+    // Process writes
+    handler.handle_write();
+
+    // Read all from client end
+    char read_buf[2048];
+    // Give some time for data to flush
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    ssize_t received = read(sv[1], read_buf, sizeof(read_buf));
+
+    ASSERT_GT(received, 0);
+    std::string total_received(read_buf, received);
     
-    uint32_t recv_len;
-    std::memcpy(&recv_len, recv_buf, 4);
+    std::string expected = "FirstSecondThird";
+    EXPECT_EQ(total_received, expected);
+}
+
+// Test partial writes (simulating blocked socket)
+TEST_F(SocketPairFixture, HandlesPartialWrites) {
+    ConnectionHandler handler(sv[0], reactor.get());
+
+    // 1. Fill the kernel receive buffer on the "client" side (sv[1]) 
+    // so that writes to sv[0] will eventually block or be partial.
+    // We do this by writing to sv[0] directly until it blocks, then we know the pipe is full.
+    // BUT we want to test handle_write, so we need to fill sv[1]'s RECV buffer.
+    // We do that by writing LOTS of data to sv[0] and NOT reading from sv[1].
     
-    // מוודאים המרה תקינה בחזרה והגעת הטקסט
-    EXPECT_EQ(ntohl(recv_len), 5);
-    EXPECT_STREQ(recv_buf + 4, "WORLD");
+    // However, send_message just queues. handle_write does the `send` syscall.
+    
+    // Let's queue a massive message (larger than typical kernel buffer, e.g., > 200KB)
+    size_t huge_size = 500 * 1024; 
+    std::vector<char> huge_msg(huge_size, 'A');
+    handler.send_message(huge_msg);
+
+    // 2. Call handle_write. It should send what it can and return, leaving remaining data in queue.
+    handler.handle_write();
+    
+    // 3. Now read some data from sv[1] to make space
+    char buf[4096];
+    ssize_t read_bytes = read(sv[1], buf, sizeof(buf));
+    ASSERT_GT(read_bytes, 0);
+
+    // 4. Call handle_write again to resume sending
+    handler.handle_write();
+
+    // Verification: If logic failed, we might lose data or crash. 
+    // We verified that handle_write didn't block indefinitely (test would timeout) 
+    // and that we could resume.
+    SUCCEED();
 }

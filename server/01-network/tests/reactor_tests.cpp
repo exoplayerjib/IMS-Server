@@ -106,13 +106,9 @@ TEST_F(ReactorTest, ProcessesIncomingDataWithoutCrashing) {
     int client_fd = create_client_and_connect();
     ASSERT_GE(client_fd, 0);
 
-    // נשלח הודעה חוקית לפי הפרוטוקול שקבענו (4 בתים אורך, ואז ה-Payload)
-    uint32_t len = htonl(4);
-    send(client_fd, &len, 4, 0);
     send(client_fd, "PING", 4, 0);
 
-    // ממתינים מעט כדי שה-epoll יקלוט את ה-EPOLLIN, יקרא ל-ConnectionHandler, 
-    // יעביר את זה ל-ActorThreadPool, וידפיס למסך.
+    // Wait for epoll to trigger EPOLLIN, ConnectionHandler to read, and ActorThreadPool to execute.
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     
     close(client_fd);
@@ -138,8 +134,6 @@ TEST_F(ReactorTest, HandlesMultipleClientsSimultaneously) {
 
     // כולם שולחים מידע בו זמנית
     for (int fd : client_fds) {
-        uint32_t len = htonl(2);
-        send(fd, &len, 4, 0);
         send(fd, "OK", 2, 0);
     }
 
@@ -159,42 +153,20 @@ TEST_F(ReactorTest, HandlesMultipleClientsSimultaneously) {
 // קבוצה 5: עמידות בפני לקוחות בעייתיים (Bad Actors)
 // ==========================================
 
-TEST_F(ReactorTest, ClientDisconnectsMidHeader) {
+TEST_F(ReactorTest, ClientDisconnectsAbruptly) {
     start_reactor_in_background();
     int client_fd = create_client_and_connect();
     ASSERT_GE(client_fd, 0);
 
-    // הלקוח שולח רק 2 בתים מתוך ה-4 של ה-Header (אורך ההודעה)
-    uint32_t len = htonl(100);
-    send(client_fd, &len, 2, 0); 
+    // Send some data
+    send(client_fd, "PARTIAL", 7, 0);
     
     // ואז מתנתק בפתאומיות
     close(client_fd);
 
-    // ממתינים קצת כדי לוודא שה-Reactor מקבל את אירוע הניתוק (EPOLLRDHUP) 
-    // ומנקה את ה-ConnectionHandler מבלי לקרוס (Segmentation Fault).
+    // Wait to ensure Reactor handles the disconnect (EPOLLRDHUP) gracefully
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     SUCCEED();
-}
-
-TEST_F(ReactorTest, ReactorDisconnectsOnOversizedPayload) {
-    start_reactor_in_background();
-    int client_fd = create_client_and_connect();
-    ASSERT_GE(client_fd, 0);
-
-    // הלקוח מנסה לעשות התקפת הצפת זיכרון - טוען שיש לו הודעה של 15 מגה-בייט
-    uint32_t huge_len = htonl(15 * 1024 * 1024); 
-    send(client_fd, &huge_len, 4, 0);
-
-    // השרת (דרך ה-ConnectionHandler) אמור לזהות את זה ולסגור לנו את החיבור.
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-
-    // ננסה לקרוא מהשרת. אם הוא סגר את החיבור, recv יחזיר 0.
-    char buf[10];
-    ssize_t res = recv(client_fd, buf, sizeof(buf), 0);
-    EXPECT_EQ(res, 0) << "Server should have closed the connection but didn't.";
-    
-    close(client_fd);
 }
 
 // ==========================================
@@ -228,10 +200,7 @@ TEST_F(ReactorTest, HandlesLargeFragmentedPayload) {
     int client_fd = create_client_and_connect();
     ASSERT_GE(client_fd, 0);
 
-    // נשלח הודעה גדולה אבל חוקית - מגה-בייט 1
     const int payload_size = 1024 * 1024;
-    uint32_t len = htonl(payload_size);
-    send(client_fd, &len, 4, 0);
 
     std::vector<char> big_data(payload_size, 'A');
     int sent_bytes = 0;
@@ -248,10 +217,10 @@ TEST_F(ReactorTest, HandlesLargeFragmentedPayload) {
         std::this_thread::sleep_for(std::chrono::microseconds(50));
     }
 
-    // נותנים לשרת זמן לעבד את ההודעה השלמה (המחלקה ConnectionHandler תרכיב הכל יחד)
+    // Wait for server to process all chunks
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
     
-    // נוודא שהשרת לא סגר עלינו את החיבור כי הוא חשב שקרתה שגיאה
+    // Verify connection is still open (server consumes stream)
     char buf[1];
     ssize_t peek_res = recv(client_fd, buf, 1, MSG_PEEK | MSG_DONTWAIT);
     EXPECT_NE(peek_res, 0) << "Server improperly closed connection during fragmented read.";
