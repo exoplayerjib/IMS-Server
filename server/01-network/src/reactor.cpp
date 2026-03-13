@@ -22,7 +22,7 @@ Reactor::Reactor(int thread_num, int port) :  port(port) , thread_pool(thread_nu
         std::cerr << "Failed to create server socket." << std::endl;
         throw std::runtime_error("Failed to create server socket.");
     }
-    struct sockaddr_in server_addr = {0};
+    struct sockaddr_in server_addr = {};
     server_addr.sin_family = AF_INET;
     server_addr.sin_addr.s_addr = INADDR_ANY;
     server_addr.sin_port = htons(port);
@@ -157,7 +157,7 @@ void Reactor::start() {
                     continue;
                 }
                 if (fd == server_fd) {
-                    struct sockaddr_in client_addr = {0}; 
+                    struct sockaddr_in client_addr = {}; 
                     socklen_t c_len = sizeof(client_addr); 
                     int client_con_fd = accept4(server_fd, (sockaddr*)&client_addr, &c_len, SOCK_NONBLOCK);
                     if (client_con_fd == -1){
@@ -165,7 +165,7 @@ void Reactor::start() {
                         continue;
                     }
                     ConnectionHandler* handler = new ConnectionHandler(client_con_fd, this);
-                    std::shared_ptr<IEventHandler> handler_ptr(handler, [this,handler] 
+                    std::shared_ptr<IEventHandler> handler_ptr(handler, [this](ConnectionHandler* handler) 
                         {
                         this->thread_pool.remove_actor(handler);
                         delete handler;

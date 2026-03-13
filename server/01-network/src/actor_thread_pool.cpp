@@ -53,7 +53,6 @@ void ActorThreadPool::submit(std::shared_ptr<IEventHandler> actor, IO_Task task)
     }
 
     if (is_ready) {
-        std::unique_lock<std::shared_mutex> write_lock(actor_tasks_mutex);
         std::queue<IO_Task>& qu = pending_tasks_of(actor.get());
         qu.emplace(task);
     }

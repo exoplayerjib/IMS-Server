@@ -63,11 +63,11 @@ class ConnectionHandler : public IEventHandler {
         enum class ReadState { READ_HEADER, READ_PAYLOAD };
 
         int fd;                              ///< File descriptor for the accepted client socket.
-        ReadState read_state;                ///< Current framing phase for inbound data.
         ByteStream current_read_bstream;     ///< Accumulates bytes for the message currently being received.
         std::queue<ByteStream> write_queue;  ///< Ordered queue of outbound frames pending transmission.
         std::mutex write_queue_mutex;        ///< Guards @c write_queue for concurrent producers.
         Reactor* reactor;                    ///< Non-owning pointer to the parent reactor used for epoll updates.
+        ReadState read_state;                ///< Current framing phase for inbound data.
         bool closed;                         ///< Set to @c true when the peer closes the connection or an unrecoverable error occurs.
 
         /**
