@@ -32,21 +32,30 @@ std::function<void()> ConnectionHandler::handle_read(){
     if (closed) {
         return nullptr;
     }
+    std::vector<char> aggregate;
     while (true) {
         ssize_t bytes_read = recv(fd, current_read_bytestream.data(), BYTESTREAM_SIZE, 0);
         if (bytes_read > 0) {
-            return [this, payload = std::vector<char>(current_read_bytestream.data(), current_read_bytestream.data() + bytes_read)]() mutable {
-                std::cout << "Received message of size " << payload.size() << " bytes from fd " << fd << std::endl;
-                return;
-            };
+            aggregate.insert(aggregate.end(),
+             current_read_bytestream.data(),
+            current_read_bytestream.data() + bytes_read);
+            continue;
         }
         else {
             handle_io_error(bytes_read);
-            return nullptr;
+            if (closed) {
+                return nullptr;
+            }
+            break;
         }
     }
-
-
+    if (aggregate.empty() || closed) {
+        return nullptr;
+    }
+    return [this, payload = std::move(aggregate)] mutable { 
+        // Placeholder for actual message processing logic.
+        std::cout << "Received message of size " << payload.size() << " bytes on fd " << fd << std::endl;
+    };
 }
 
 void ConnectionHandler::handle_write() {
